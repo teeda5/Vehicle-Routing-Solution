@@ -1,0 +1,8 @@
+numpy
+ortools
+matplotlib
+seaborn
+streamlit
+pandas
+Python-IO
+openpyxl
