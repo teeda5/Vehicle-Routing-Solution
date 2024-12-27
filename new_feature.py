@@ -1106,6 +1106,7 @@ def print_solution(data, manager, routing, solution):
     total_deliveries = 0
     max_route_distance = 0
     min_route_distance = float('inf')
+    active_routes = 0
 
     # Create tabs for different views
     solution_tabs = st.tabs(["Route Details", "Summary Statistics", "Load Analysis"])
@@ -1123,7 +1124,22 @@ def print_solution(data, manager, routing, solution):
             route_deliveries = 0
             route_stops = []
 
-            # Create expandable section for each route
+            # Calculate route metrics first to check if route has any load
+            temp_index = index
+            has_load = False
+            while not routing.IsEnd(temp_index):
+                node_index = manager.IndexToNode(temp_index)
+                if data["demands"][node_index] > 0 or data["pickups"][node_index] > 0:
+                    has_load = True
+                    break
+                temp_index = solution.Value(routing.NextVar(temp_index))
+
+            # Skip routes with no load
+            if not has_load:
+                continue
+
+            active_routes += 1
+            # Create expandable section for each active route
             with st.expander(f"📍 Route for {vehicle_type} {vehicle_id + 1}", expanded=True):
                 # Track route progression
                 while not routing.IsEnd(index):
@@ -1138,63 +1154,67 @@ def print_solution(data, manager, routing, solution):
                     route_pickups += data["pickups"][node_index]
                     route_deliveries += data["demands"][node_index]
 
-                    # Store stop information
-                    route_stops.append({
-                        "location": node_index,
-                        "load_change": load_change,
-                        "current_load": route_load,
-                        "pickup": data["pickups"][node_index],
-                        "delivery": data["demands"][node_index]
-                    })
+                    # Only add stops with actual demand or pickup
+                    if data["demands"][node_index] > 0 or data["pickups"][node_index] > 0:
+                        route_stops.append({
+                            "location": node_index,
+                            "load_change": load_change,
+                            "current_load": route_load,
+                            "pickup": data["pickups"][node_index],
+                            "delivery": data["demands"][node_index]
+                        })
 
                     route_distance += distance
                     index = next_index
 
-                # Display route information
-                st.markdown(f"""
-                #### Route Statistics:
-                - 🛣️ **Distance**: {route_distance / 1000:.2f} km
-                - 📦 **Total Load**: {route_load:,} units
-                - 🔄 **Pickups**: {route_pickups:,} units
-                - 📬 **Deliveries**: {route_deliveries:,} units
-                - 🏪 **Stops**: {len(route_stops)} locations
-                """)
+                # Display route information only if there are stops
+                if route_stops:
+                    st.markdown(f"""
+                    #### Route Statistics:
+                    - 🛣️ **Distance**: {route_distance / 1000:.2f} km
+                    - 📦 **Total Load**: {route_load:,} units
+                    - 🔄 **Pickups**: {route_pickups:,} units
+                    - 📬 **Deliveries**: {route_deliveries:,} units
+                    - 🏪 **Stops**: {len(route_stops)} locations
+                    """)
 
-                # Create detailed stops table
-                stops_df = pd.DataFrame(route_stops)
-                stops_df.columns = ['Stop Location', 'Load Change', 'Current Load', 'Pickup', 'Delivery']
-                st.write("#### Detailed Stop Information:")
-                st.dataframe(
-                    stops_df.style.format({
-                        'Load Change': '{:,.0f}',
-                        'Current Load': '{:,.0f}',
-                        'Pickup': '{:,.0f}',
-                        'Delivery': '{:,.0f}'
-                    })
-                )
+                    # Create detailed stops table
+                    stops_df = pd.DataFrame(route_stops)
+                    stops_df.columns = ['Stop Location', 'Load Change', 'Current Load', 'Pickup', 'Delivery']
+                    st.write("#### Detailed Stop Information:")
+                    st.dataframe(
+                        stops_df.style.format({
+                            'Load Change': '{:,.0f}',
+                            'Current Load': '{:,.0f}',
+                            'Pickup': '{:,.0f}',
+                            'Delivery': '{:,.0f}'
+                        })
+                    )
 
-                # Update totals
-                total_distance += route_distance
-                total_load += route_load
-                total_pickups += route_pickups
-                total_deliveries += route_deliveries
-                max_route_distance = max(max_route_distance, route_distance)
-                min_route_distance = min(min_route_distance, route_distance)
+                    # Update totals
+                    total_distance += route_distance
+                    total_load += route_load
+                    total_pickups += route_pickups
+                    total_deliveries += route_deliveries
+                    max_route_distance = max(max_route_distance, route_distance)
+                    min_route_distance = min(min_route_distance, route_distance)
 
     # Tab 2: Summary Statistics
     with solution_tabs[1]:
+        st.write(f"### Active Routes: {active_routes} out of {data['num_vehicles']} vehicles")
+
         col1, col2, col3 = st.columns(3)
 
         with col1:
             st.metric(
                 "Total Distance",
                 f"{total_distance / 1000:.2f} km",
-                help="Total distance covered by all vehicles"
+                help="Total distance covered by active vehicles"
             )
             st.metric(
                 "Average Route Distance",
-                f"{(total_distance / data['num_vehicles']) / 1000:.2f} km",
-                help="Average distance per route"
+                f"{(total_distance / active_routes) / 1000:.2f} km" if active_routes > 0 else "0 km",
+                help="Average distance per active route"
             )
 
         with col2:
@@ -1211,9 +1231,9 @@ def print_solution(data, manager, routing, solution):
 
         with col3:
             st.metric(
-                "Vehicles Used",
-                f"{data['num_vehicles']}",
-                help="Number of vehicles used in solution"
+                "Active Vehicles",
+                f"{active_routes}",
+                help="Number of vehicles with actual deliveries/pickups"
             )
             st.metric(
                 "Net Load Handled",
@@ -1221,211 +1241,150 @@ def print_solution(data, manager, routing, solution):
                 help="Net difference between deliveries and pickups"
             )
 
-        # Additional statistics
-        st.write("### 📊 Route Analysis")
-        st.markdown(f"""
-        - Longest Route: {max_route_distance / 1000:.2f} km
-        - Shortest Route: {min_route_distance / 1000:.2f} km
-        - Route Length Variation: {(max_route_distance - min_route_distance) / 1000:.2f} km
-        """)
+        if active_routes > 0:
+            st.write("### 📊 Route Analysis")
+            st.markdown(f"""
+            - Longest Route: {max_route_distance / 1000:.2f} km
+            - Shortest Route: {min_route_distance / 1000:.2f} km
+            - Route Length Variation: {(max_route_distance - min_route_distance) / 1000:.2f} km
+            """)
 
     # Tab 3: Load Analysis
     with solution_tabs[2]:
-        # Calculate load utilization
-        total_capacity = sum(data["vehicle_capacities"])
-        max_load = max(data["demands"])
-        avg_load = sum(data["demands"]) / len(data["demands"])
+        if active_routes > 0:
+            # Calculate load utilization
+            total_capacity = sum(data["vehicle_capacities"])
+            max_load = max(data["demands"])
+            avg_load = sum(data["demands"]) / len(data["demands"])
 
-        st.write("### 📦 Load Distribution Analysis")
+            st.write("### 📦 Load Distribution Analysis")
 
-        # Create load metrics
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric(
-                "Maximum Single Load",
-                f"{max_load:,}",
-                help="Largest single delivery/pickup"
-            )
-            st.metric(
-                "Average Load",
-                f"{avg_load:.0f}",
-                help="Average delivery/pickup size"
-            )
+            # Create load metrics
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric(
+                    "Maximum Single Load",
+                    f"{max_load:,}",
+                    help="Largest single delivery/pickup"
+                )
+                st.metric(
+                    "Average Load",
+                    f"{avg_load:.0f}",
+                    help="Average delivery/pickup size"
+                )
 
-        with col2:
-            st.metric(
-                "Total Fleet Capacity",
-                f"{total_capacity:,}",
-                help="Combined capacity of all vehicles"
-            )
-            capacity_utilization = (total_deliveries / total_capacity) * 100
-            st.metric(
-                "Capacity Utilization",
-                f"{capacity_utilization:.1f}%",
-                help="Percentage of total fleet capacity utilized"
-            )
+            with col2:
+                st.metric(
+                    "Total Fleet Capacity",
+                    f"{total_capacity:,}",
+                    help="Combined capacity of all vehicles"
+                )
+                capacity_utilization = (total_deliveries / total_capacity) * 100
+                st.metric(
+                    "Capacity Utilization",
+                    f"{capacity_utilization:.1f}%",
+                    help="Percentage of total fleet capacity utilized"
+                )
+        else:
+            st.warning("No active routes to analyze.")
 
 
 def plot_routes(data, manager, routing, solution):
-    """Plot optimized routes with enhanced visualization"""
-    st.write("### 🗺️ Optimized Vehicle Routes")
+    """Plot optimized routes using lat/long coordinates"""
+    st.write("### Optimized Vehicle Routes")
+    st.write("""
+            The graph below shows the optimized routes for each vehicle.
+            - The depot is marked with a star
+            - Customer locations are shown with circles sized by demand
+            - Different colors represent different vehicle routes
+            - Arrows show the direction of travel
+            - Only routes with actual deliveries/pickups are shown
+            """)
 
-    # Create tabs for different visualization options
-    viz_tabs = st.tabs(["Route Map", "Legend"])
+    plt.figure(figsize=(12, 8))
+    colors = sns.color_palette('husl', n_colors=data['num_vehicles'])
 
-    with viz_tabs[0]:
-        fig, ax = plt.subplots(figsize=(15, 10))
+    # Plot all locations with actual demand or pickup
+    lats, lons = zip(*data['locations'])
+    active_locations = [i for i in range(1, len(data['locations']))
+                        if data['demands'][i] > 0 or data['pickups'][i] > 0]
 
-        # Use a better color palette for routes
-        colors = plt.cm.Set3(np.linspace(0, 1, data['num_vehicles']))
+    if active_locations:
+        demands_normalized = np.array([data['demands'][i] for i in active_locations]) * 10
+        pickups_normalized = np.array([data['pickups'][i] for i in active_locations]) * 10
+        active_lats = [lats[i] for i in active_locations]
+        active_lons = [lons[i] for i in active_locations]
 
-        # Extract locations
-        locations = data['locations']
-        depot = locations[0]
-        customers = locations[1:]
+        plt.scatter(active_lons, active_lats, c='lightgray', s=demands_normalized,
+                    alpha=0.5, zorder=1)
 
-        # Plot customers with demands
-        customer_lats = [loc[0] for loc in customers]
-        customer_lons = [loc[1] for loc in customers]
+    # Plot depot
+    plt.scatter(lons[0], lats[0], c='red', marker='*', s=200,
+                edgecolors='black', zorder=2, label='Depot')
 
-        # Scale demands for scatter plot (using sqrt for better visualization)
-        demands = np.array(data['demands'][1:])
-        scaled_demands = np.sqrt(demands) * 100
+    # Plot routes for each vehicle
+    active_vehicle_count = 0
+    for vehicle_id in range(data['num_vehicles']):
+        index = routing.Start(vehicle_id)
+        coordinates = []
+        route_load = 0
+        has_load = False
+        vehicle_type = data["vehicle_types"][vehicle_id]
 
-        # Plot customers
-        plt.scatter(
-            customer_lons,
-            customer_lats,
-            s=scaled_demands,
-            c='lightblue',
-            alpha=0.6,
-            edgecolor='blue',
-            linewidth=1,
-            zorder=2,
-            label='Customers'
-        )
+        # Check if route has any load
+        temp_index = index
+        while not routing.IsEnd(temp_index):
+            node_index = manager.IndexToNode(temp_index)
+            if data["demands"][node_index] > 0 or data["pickups"][node_index] > 0:
+                has_load = True
+                break
+            temp_index = solution.Value(routing.NextVar(temp_index))
 
-        # Plot depot
-        plt.scatter(
-            depot[1],
-            depot[0],
-            c='red',
-            marker='*',
-            s=500,
-            edgecolor='darkred',
-            linewidth=2,
-            zorder=5,
-            label='Depot'
-        )
+        # Skip routes with no load
+        if not has_load:
+            continue
 
-        # Plot routes for each vehicle
-        for vehicle_id in range(data['num_vehicles']):
-            index = routing.Start(vehicle_id)
-            route_coords = []
-            route_load = 0
-            vehicle_type = data["vehicle_types"][vehicle_id]
+        active_vehicle_count += 1
+        while not routing.IsEnd(index):
+            node_index = manager.IndexToNode(index)
+            coordinates.append(data['locations'][node_index])
+            route_load += data['demands'][node_index] - data['pickups'][node_index]
+            index = solution.Value(routing.NextVar(index))
+        coordinates.append(data['locations'][0])
 
-            while not routing.IsEnd(index):
-                node_index = manager.IndexToNode(index)
-                route_coords.append(locations[node_index])
-                route_load += data['demands'][node_index] - data['pickups'][node_index]
-                index = solution.Value(routing.NextVar(index))
-            route_coords.append(locations[0])  # Return to depot
+        # Plot route
+        lats, lons = zip(*coordinates)
+        plt.plot(lons, lats, '-', color=colors[vehicle_id],
+                 label=f'{vehicle_type} {vehicle_id + 1} (Load: {route_load})',
+                 linewidth=2, zorder=3)
 
-            # Extract route coordinates
-            route_lats = [coord[0] for coord in route_coords]
-            route_lons = [coord[1] for coord in route_coords]
+        # Add direction arrows
+        for i in range(len(coordinates) - 1):
+            mid_lon = (coordinates[i][1] + coordinates[i + 1][1]) / 2
+            mid_lat = (coordinates[i][0] + coordinates[i + 1][0]) / 2
+            plt.annotate('', xy=(coordinates[i + 1][1], coordinates[i + 1][0]),
+                         xytext=(mid_lon, mid_lat),
+                         arrowprops=dict(arrowstyle='->', color=colors[vehicle_id]))
 
-            # Plot route
-            plt.plot(
-                route_lons,
-                route_lats,
-                color=colors[vehicle_id],
-                linewidth=2,
-                alpha=0.7,
-                zorder=3,
-                label=f'{vehicle_type} {vehicle_id + 1}'
-            )
+    # Add location labels for depot and active locations
+    plt.annotate(f'Depot', (data['locations'][0][1], data['locations'][0][0]),
+                 xytext=(10, 10), textcoords='offset points', fontsize=10,
+                 bbox=dict(facecolor='white', edgecolor='red', alpha=0.7))
 
-            # Add arrows to show direction
-            for i in range(len(route_coords) - 1):
-                mid_lon = (route_lons[i] + route_lons[i + 1]) / 2
-                mid_lat = (route_lats[i] + route_lats[i + 1]) / 2
-                plt.arrow(
-                    route_lons[i], route_lats[i],
-                    (route_lons[i + 1] - route_lons[i]) * 0.2,
-                    (route_lats[i + 1] - route_lats[i]) * 0.2,
-                    head_width=0.002,
-                    head_length=0.003,
-                    fc=colors[vehicle_id],
-                    ec=colors[vehicle_id],
-                    zorder=4
-                )
+    for i in active_locations:
+        lat, lon = data['locations'][i]
+        plt.annotate(f'Customer {i}\nDemand: {data["demands"][i]}\nPickup: {data["pickups"][i]}',
+                     (lon, lat), xytext=(10, 10),
+                     textcoords='offset points', fontsize=9,
+                     bbox=dict(facecolor='white', edgecolor='gray', alpha=0.7))
 
-        # Add customer labels
-        for i, (lat, lon) in enumerate(locations):
-            if i == 0:
-                label = 'Depot'
-                bbox_props = dict(
-                    facecolor='white',
-                    edgecolor='red',
-                    alpha=0.8,
-                    pad=2
-                )
-            else:
-                label = f'C{i}\nD:{data["demands"][i]}\nP:{data["pickups"][i]}'
-                bbox_props = dict(
-                    facecolor='white',
-                    edgecolor='gray',
-                    alpha=0.7,
-                    pad=2
-                )
-
-            plt.annotate(
-                label,
-                (lon, lat),
-                xytext=(5, 5),
-                textcoords='offset points',
-                fontsize=8,
-                bbox=bbox_props,
-                zorder=6
-            )
-
-        plt.title('Optimized Vehicle Routes', pad=20, size=14, weight='bold')
-        plt.xlabel('Longitude', size=12)
-        plt.ylabel('Latitude', size=12)
-        plt.grid(True, linestyle='--', alpha=0.4)
-        plt.legend(
-            bbox_to_anchor=(1.05, 1),
-            loc='upper left',
-            borderaxespad=0,
-            fontsize=10
-        )
-
-        plt.tight_layout()
-        st.pyplot(fig)
-
-    with viz_tabs[1]:
-        st.write("### 📖 Map Legend")
-        st.markdown("""
-        #### Map Elements
-        - 🔴 **Red Star**: Depot location
-        - 🔵 **Blue Circles**: Customer locations
-            - Circle size indicates demand amount
-        - 📝 **Labels**:
-            - C[N]: Customer number
-            - D: Demand
-            - P: Pickup
-        - 🚛 **Colored Lines**: Vehicle routes
-            - Each color represents a different vehicle
-            - Arrows show direction of travel
-
-        #### Route Details
-        Each route shows:
-        - Vehicle type and number
-        - Sequence of customer visits
-        - Direction of travel
-        """)
+    plt.title(f'Optimized Vehicle Routes (Active Routes: {active_vehicle_count})', pad=20)
+    plt.xlabel('Longitude')
+    plt.ylabel('Latitude')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    st.pyplot(plt)
 
 
 def calculate_total_distance(routing, solution, manager, data):
